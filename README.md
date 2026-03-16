@@ -1,6 +1,6 @@
 # xhttp
 
-Minimal HTTP helper for Go with simple JSON requests, multipart uploads,
+Minimal HTTP helper package for Go with simple JSON requests, multipart uploads,
 and lightweight response handling.
 
 Designed to stay small, readable, and dependency-free.
@@ -22,7 +22,7 @@ No external dependencies.
 # Install
 
 ``` bash
-go get github.com/yourname/xhttp
+go get github.com/chrisbrocklesby/xhttp
 ```
 
 ------------------------------------------------------------------------
@@ -30,7 +30,7 @@ go get github.com/yourname/xhttp
 # Import
 
 ``` go
-import "github.com/yourname/xhttp"
+import "github.com/chrisbrocklesby/xhttp"
 ```
 
 ------------------------------------------------------------------------
@@ -207,7 +207,7 @@ if err != nil {
 
 ------------------------------------------------------------------------
 
-# JWT Validation
+# JWT Validation (Expiry Checker)
 
 `ValidateJWT` checks:
 
