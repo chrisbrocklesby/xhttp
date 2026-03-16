@@ -1,16 +1,16 @@
 # xhttp
 
-Minimal HTTP helper package for Go with simple JSON requests, multipart uploads,
-and lightweight response handling.
+Minimal HTTP helper package for Go. Supports JSON, form-encoded payloads, and file uploads
+out of the box — with fluent response accessors and no external dependencies.
 
 Designed to stay small, readable, and dependency-free.
 
 ## Features
 
 -   Simple `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
--   Automatic JSON request encoding
--   Automatic multipart upload when files are present
--   Consistent response parsing
+-   Automatic JSON or multipart encoding (detects files automatically)
+-   Supports `application/x-www-form-urlencoded` via `xhttp.Form`
+-   Fluent response accessors — no raw type assertions
 -   Typed HTTP errors
 -   Built-in request timeout
 -   Lightweight JWT expiry validation
@@ -39,8 +39,9 @@ import "github.com/chrisbrocklesby/xhttp"
 
 ``` go
 type Body map[string]any
+type Form map[string]string
 type Headers map[string]string
-type Response []Body
+type Response struct{ ... }
 ```
 
 ------------------------------------------------------------------------
@@ -78,6 +79,37 @@ res, err := xhttp.Post(
     nil,
 )
 ```
+
+------------------------------------------------------------------------
+
+## POST Form URL Encoded
+
+``` go
+res, err := xhttp.Post(
+    "https://api.example.com/login",
+    xhttp.Form{
+        "username": "chris",
+        "password": "secret",
+    },
+    nil,
+)
+```
+
+Use the same pattern with `xhttp.Put(...)` and `xhttp.Patch(...)`.
+
+## Payload Encoding Rules
+
+For `xhttp.Post(...)`, `xhttp.Put(...)`, and `xhttp.Patch(...)`, encoding is
+chosen from the payload type:
+
+| Payload value | Content-Type | Behavior |
+|---|---|---|
+| `xhttp.Body{...}` without files | `application/json` | JSON body |
+| `xhttp.Body{...}` with `*os.File` / `[]*os.File` | `multipart/form-data` | File upload + form parts |
+| `xhttp.Form{...}` | `application/x-www-form-urlencoded` | URL-encoded form body |
+| `nil` | none | No request body |
+
+If you pass any other payload type, the request returns an error.
 
 ------------------------------------------------------------------------
 
@@ -173,11 +205,50 @@ res, err := xhttp.Post(
 
 # Responses
 
+`Response` wraps any JSON value (object, array, string, number, bool, or null)
+and provides fluent accessor methods so you never need raw type assertions.
+
+## Methods
+
+| Method | Returns | Description |
+|---|---|---|
+| `.Key("key")` | `Response` | Navigate into a JSON object by key |
+| `.Array()` | `[]Response` | Iterate a JSON array |
+| `.String()` | `string` | Extract a string value (or `""`) |
+| `.Int()` | `int` | Extract an integer value (or `0`) |
+| `.Float()` | `float64` | Extract a float value (or `0`) |
+| `.Bool()` | `bool` | Extract a boolean value (or `false`) |
+| `.Raw()` | `any` | Access the underlying value directly |
+
+All methods are safe to chain — calling `.Key` on a non-object or `.String` on
+a non-string returns the zero value rather than panicking.
+
+## Accessing an object field
+
 ``` go
-type Response []map[string]any
+res, err := xhttp.Post("https://api.example.com/auth", xhttp.Body{
+    "identity": "user@example.com",
+    "password": "secret",
+}, nil)
+
+token := res.Key("token").String()
 ```
 
-Handles both array and single-object JSON responses.
+## Iterating an array
+
+``` go
+res, err := xhttp.Get("https://api.example.com/posts", nil)
+
+for _, post := range res.Key("items").Array() {
+    fmt.Println(post.Key("title").String())
+}
+```
+
+## Nested access
+
+``` go
+city := res.Key("address").Key("city").String()
+```
 
 ------------------------------------------------------------------------
 

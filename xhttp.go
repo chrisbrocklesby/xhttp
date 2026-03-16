@@ -9,14 +9,72 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 type Body map[string]any
+type Form map[string]string
 type Headers map[string]string
-type Response []Body
+
+// Response wraps any JSON value returned by an HTTP call.
+// Use the accessor methods instead of raw type assertions.
+type Response struct {
+	data any
+}
+
+// Key returns the value for key if the response holds a JSON object.
+func (r Response) Key(key string) Response {
+	if m, ok := r.data.(map[string]any); ok {
+		return Response{data: m[key]}
+	}
+	return Response{}
+}
+
+// Array returns the items as []Response if the response holds a JSON array.
+func (r Response) Array() []Response {
+	s, ok := r.data.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]Response, len(s))
+	for i, v := range s {
+		out[i] = Response{data: v}
+	}
+	return out
+}
+
+// String returns the string value, or "" if the value is not a string.
+func (r Response) String() string {
+	s, _ := r.data.(string)
+	return s
+}
+
+// Float returns the numeric value, or 0 if the value is not a number.
+func (r Response) Float() float64 {
+	f, _ := r.data.(float64)
+	return f
+}
+
+// Int returns the integer value, or 0 if the value is not a number.
+func (r Response) Int() int {
+	f, _ := r.data.(float64)
+	return int(f)
+}
+
+// Bool returns the boolean value, or false if the value is not a bool.
+func (r Response) Bool() bool {
+	b, _ := r.data.(bool)
+	return b
+}
+
+// Raw returns the underlying value for cases that need direct access.
+func (r Response) Raw() any {
+	return r.data
+}
 
 const defaultTimeout = 30 * time.Second
 
@@ -38,8 +96,8 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("request failed: %s %s: %s", e.Status, e.URL, string(e.Body))
 }
 
-func Post(url string, body Body, headers Headers) (Response, error) {
-	return request(http.MethodPost, url, body, headers)
+func Post(url string, payload any, headers Headers) (Response, error) {
+	return request(http.MethodPost, url, payload, headers)
 }
 
 func Get(url string, headers Headers) (Response, error) {
@@ -50,23 +108,23 @@ func Delete(url string, headers Headers) (Response, error) {
 	return request(http.MethodDelete, url, nil, headers)
 }
 
-func Patch(url string, body Body, headers Headers) (Response, error) {
-	return request(http.MethodPatch, url, body, headers)
+func Patch(url string, payload any, headers Headers) (Response, error) {
+	return request(http.MethodPatch, url, payload, headers)
 }
 
-func Put(url string, body Body, headers Headers) (Response, error) {
-	return request(http.MethodPut, url, body, headers)
+func Put(url string, payload any, headers Headers) (Response, error) {
+	return request(http.MethodPut, url, payload, headers)
 }
 
-func request(method, url string, body Body, headers Headers) (Response, error) {
-	reqBody, contentType, err := encodeBody(body)
+func request(method, url string, payload any, headers Headers) (Response, error) {
+	reqBody, contentType, err := encodePayload(payload)
 	if err != nil {
-		return nil, err
+		return Response{}, err
 	}
 
 	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return Response{}, fmt.Errorf("create request: %w", err)
 	}
 
 	if contentType != "" {
@@ -76,17 +134,17 @@ func request(method, url string, body Body, headers Headers) (Response, error) {
 
 	resp, err := defaultClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return Response{}, fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return Response{}, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, &HTTPError{
+		return Response{}, &HTTPError{
 			StatusCode: resp.StatusCode,
 			Status:     resp.Status,
 			URL:        url,
@@ -96,22 +154,35 @@ func request(method, url string, body Body, headers Headers) (Response, error) {
 
 	return decodeResponse(respBytes)
 }
-
-func encodeBody(body Body) (io.Reader, string, error) {
-	if body == nil {
+func encodePayload(payload any) (io.Reader, string, error) {
+	if payload == nil {
 		return nil, "", nil
 	}
 
-	if hasFiles(body) {
-		return buildMultipart(body)
+	switch v := payload.(type) {
+	case Body:
+		if hasFiles(v) {
+			return buildMultipart(v)
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return nil, "", fmt.Errorf("marshal json body: %w", err)
+		}
+		return bytes.NewReader(b), "application/json", nil
+	case Form:
+		return encodeForm(v), "application/x-www-form-urlencoded", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported payload type %T (expected xhttp.Body, xhttp.Form, or nil)", payload)
+	}
+}
+
+func encodeForm(form Form) io.Reader {
+	values := url.Values{}
+	for k, v := range form {
+		values.Set(k, v)
 	}
 
-	b, err := json.Marshal(body)
-	if err != nil {
-		return nil, "", fmt.Errorf("marshal json body: %w", err)
-	}
-
-	return bytes.NewReader(b), "application/json", nil
+	return strings.NewReader(values.Encode())
 }
 
 func applyHeaders(dst http.Header, headers Headers) {
@@ -205,21 +276,12 @@ func decodeResponse(data []byte) (Response, error) {
 		return Response{}, nil
 	}
 
-	var list []Body
-	if err := json.Unmarshal(data, &list); err == nil {
-		return list, nil
+	var result any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return Response{}, fmt.Errorf("decode response: %w", err)
 	}
 
-	var item Body
-	if err := json.Unmarshal(data, &item); err == nil {
-		return Response{item}, nil
-	}
-
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return Response{}, nil
-	}
-
-	return nil, errors.New("response is not a JSON object or array of objects")
+	return Response{data: result}, nil
 }
 
 // ValidateJWT only checks JWT shape and exp claim.
